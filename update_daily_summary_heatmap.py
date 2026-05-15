@@ -4,7 +4,49 @@ import datetime
 import re
 import sys
 import urllib.request
+import urllib.error
 import json
+
+
+def validate_database_id(database_id):
+    """验证数据库 ID 格式"""
+    # 移除可能的连字符
+    clean_id = database_id.replace("-", "")
+    # Notion 数据库 ID 通常是 32 个字符（带连字符时 36 个）
+    if len(clean_id) != 32:
+        return False, f"数据库 ID 长度不正确: {len(clean_id)} 字符（应为 32 字符）"
+    return True, ""
+
+
+def verify_notion_connection(token, db_id):
+    """验证 Notion 连接是否正常"""
+    print("正在验证 Notion 连接...")
+    url = f"https://api.notion.com/v1/databases/{db_id}"
+    auth_headers = {
+        "Authorization": f"Bearer {token}",
+        "Notion-Version": "2022-06-28",
+    }
+
+    req = urllib.request.Request(url, headers=auth_headers, method="GET")
+    try:
+        with urllib.request.urlopen(req) as response:
+            res = json.loads(response.read())
+            if "title" in res:
+                title = res["title"][0]["plain_text"] if res["title"] else "无标题"
+                print(f"[OK] Database connected successfully: {title}")
+                return True, res
+            else:
+                return False, "数据库响应格式异常"
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else ""
+        if e.code == 401:
+            return False, "认证失败，请检查 NOTION_TOKEN 是否正确"
+        elif e.code == 404:
+            return False, "数据库未找到，请检查 NOTION_DATABASE_ID 是否正确，以及 Integration 是否已连接到该数据库"
+        else:
+            return False, f"HTTP 错误 {e.code}: {error_body[:200]}"
+    except Exception as e:
+        return False, f"连接验证失败: {str(e)}"
 
 
 def get_notion_data(token, database_id):
@@ -20,6 +62,7 @@ def get_notion_data(token, database_id):
     data_dict = {}  # {date_str: creation_time_str}
     has_more = True
     next_cursor = None
+    total_fetched = 0
 
     while has_more:
         body = {}
@@ -35,14 +78,20 @@ def get_notion_data(token, database_id):
             with urllib.request.urlopen(req) as response:
                 res = json.loads(response.read())
                 for result in res.get("results", []):
+                    total_fetched += 1
                     props = result.get("properties", {})
 
                     # 读取"日期"属性
                     date_val = None
-                    if props.get("日期") and props["日期"].get("date"):
-                        date_val = props["日期"]["date"].get("start")
+                    date_prop = props.get("日期")
+                    if date_prop:
+                        if date_prop.get("type") == "date":
+                            date_val = date_prop.get("date", {}).get("start")
+                        elif date_prop.get("type") == "created_time":
+                            # 如果日期属性实际上就是 created_time 类型
+                            date_val = date_prop.get("created_time", "").split("T")[0] if date_prop.get("created_time") else None
 
-                    # 读取"创建时间"属性（created_time 或自定义属性）
+                    # 读取"创建时间"属性
                     # 优先使用 result 自带的 created_time
                     created_time = result.get("created_time")
 
@@ -62,11 +111,33 @@ def get_notion_data(token, database_id):
 
                 has_more = res.get("has_more", False)
                 next_cursor = res.get("next_cursor")
+
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8") if e.fp else ""
+            if e.code == 404:
+                print("[ERROR] Database not found")
+                print("   Possible reasons:")
+                print("   1. NOTION_DATABASE_ID is incorrect")
+                print("   2. Notion Integration is not connected to this database")
+                print("   3. Database was deleted or permissions changed")
+                print(f"   Database ID: {database_id}")
+                sys.exit(1)
+            elif e.code == 401:
+                print("[ERROR] Authentication failed")
+                print("   Please check if NOTION_TOKEN is correct")
+                sys.exit(1)
+            elif e.code == 403:
+                print("[ERROR] Permission denied")
+                print("   Make sure the Notion Integration is connected and has read access")
+                sys.exit(1)
+            else:
+                print(f"[ERROR] HTTP {e.code}: {error_body[:500]}")
+                sys.exit(1)
         except Exception as e:
-            print(f"获取 Notion 数据失败: {e}")
+            print(f"[ERROR] Failed to get Notion data: {e}")
             sys.exit(1)
 
-    print(f"共读取到 {len(data_dict)} 天的每日总结记录")
+    print(f"共读取到 {len(data_dict)} 天的每日总结记录（总计 {total_fetched} 条页面）")
     return data_dict
 
 
@@ -82,7 +153,6 @@ def calculate_intensity(created_time_str):
         # 解析创建时间
         dt = datetime.datetime.fromisoformat(created_time_str.replace("Z", "+00:00"))
         # 转换为当天本地时间（假设用户使用北京时间 UTC+8）
-        # 如果时间带有时区信息，先转换
         if dt.tzinfo is not None:
             dt = dt.astimezone(datetime.timezone(datetime.timedelta(hours=8)))
         else:
@@ -96,8 +166,7 @@ def calculate_intensity(created_time_str):
         total_seconds = hour * 3600 + minute * 60 + second
 
         # 午夜 23:59:59 = 86399 秒
-        # 越靠近午夜，数值越接近 1.0
-        max_seconds = 23 * 3600 + 59 * 60 + 59  # 86399
+        max_seconds = 23 * 3600 + 59 * 60 + 59
 
         intensity = total_seconds / max_seconds
         return min(1.0, max(0.0, intensity))
@@ -126,7 +195,6 @@ def get_color_for_intensity(intensity):
     if intensity <= 0:
         return "#ebedf0"
 
-    # 分段渐变：浅绿 → 中绿 → 深绿
     if intensity < 0.5:
         return interpolate_color("#c6e48b", "#7bc96f", intensity * 2)
     else:
@@ -160,7 +228,6 @@ def process_svg_styling(file_path, data_dict, current_year):
 
         # 更新 <title> 标签
         if created_time:
-            # 格式化显示时间
             try:
                 dt = datetime.datetime.fromisoformat(created_time.replace("Z", "+00:00"))
                 if dt.tzinfo is not None:
@@ -181,7 +248,6 @@ def process_svg_styling(file_path, data_dict, current_year):
             count=1
         )
 
-        # 只替换第一个 fill 属性
         return re.sub(r'fill="[^"]+"', f'fill="{color}"', rect_tag, count=1)
 
     content = re.sub(
@@ -224,6 +290,8 @@ def generate_heatmap(notion_token, database_id, year):
     result = subprocess.run(command, check=True, capture_output=True, text=True)
     if result.stdout:
         print(result.stdout)
+    if result.stderr:
+        print(f"警告: {result.stderr}")
 
     return "OUT_FOLDER/notion.svg"
 
@@ -233,7 +301,29 @@ def main():
     database_id = os.getenv("NOTION_DATABASE_ID")
 
     if not notion_token or not database_id:
-        print("缺少必要的环境变量：NOTION_TOKEN 或 NOTION_DATABASE_ID")
+        print("[ERROR] Missing required environment variables")
+        if not notion_token:
+            print("   - NOTION_TOKEN not set")
+        if not database_id:
+            print("   - NOTION_DATABASE_ID not set")
+        print("")
+        print("Please set the following secrets in GitHub repository Settings > Secrets:")
+        print("   - NOTION_TOKEN: Your Notion Integration Token")
+        print("   - NOTION_DATABASE_ID: Database ID for daily summary")
+        sys.exit(1)
+
+    # 验证数据库 ID 格式
+    valid, msg = validate_database_id(database_id)
+    if not valid:
+        print(f"[WARN] {msg}")
+        print("   Continuing anyway...")
+
+    print(f"Using database ID: {database_id[:8]}...{database_id[-4:]}")
+
+    # 验证 Notion 连接
+    connected, result = verify_notion_connection(notion_token, database_id)
+    if not connected:
+        print(f"[ERROR] Connection failed: {result}")
         sys.exit(1)
 
     current_year = datetime.datetime.now().year
@@ -247,7 +337,7 @@ def main():
     svg_path = generate_heatmap(notion_token, database_id, target_year)
 
     if not os.path.exists(svg_path):
-        print(f"底稿 SVG 未生成: {svg_path}")
+        print(f"[ERROR] SVG template not generated: {svg_path}")
         sys.exit(1)
 
     # 3. 渐变着色 + 统计注入
@@ -258,7 +348,7 @@ def main():
     os.makedirs("daily_summary_heatmap", exist_ok=True)
     dest = "daily_summary_heatmap/main.svg"
     os.replace(svg_path, dest)
-    print(f"热力图已保存至 {dest}")
+    print(f"[OK] Heatmap saved to {dest}")
 
 
 if __name__ == "__main__":
