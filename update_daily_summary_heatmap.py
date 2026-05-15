@@ -237,7 +237,8 @@ def main():
         sys.exit(1)
 
     current_year = datetime.datetime.now().year
-    target_year = int(os.getenv("YEAR", current_year))
+    year_str = os.getenv("YEAR", "")
+    target_year = int(year_str) if year_str and year_str.strip() else current_year
 
     # 1. 拉取 Notion 数据
     real_data = get_notion_data(notion_token, database_id)
