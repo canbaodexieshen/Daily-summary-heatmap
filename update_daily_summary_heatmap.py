@@ -412,7 +412,7 @@ def process_svg_styling(file_path, data_dict, current_year):
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(content)
 
-    print(f"Styling complete: {total_count} days with daily summary")
+    print(f"Styling complete: {year_count} days with daily summary")
 
 
 def generate_heatmap(notion_token, database_id, year):
