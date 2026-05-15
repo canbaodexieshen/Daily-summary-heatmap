@@ -1,0 +1,75 @@
+name: Annual Heatmap Archive
+
+on:
+  workflow_dispatch:
+    inputs:
+      manual_year:
+        description: '手动指定年份生成 (例如填入 2024。如果留空，则默认生成去年的)'
+        required: false
+        default: ''
+  schedule:
+    # 每年1月1日北京时间早上10点 (UTC 2点) 自动触发
+    # 避开零点高峰，确保上一年的数据已被 Notion 汇总完毕
+    - cron: "0 2 1 1 *"
+
+permissions:
+  contents: write  # 需要写入权限才能推送代码
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install github-heatmap
+
+      - name: Determine Target Year
+        run: |
+          if [ -n "${{ github.event.inputs.manual_year }}" ]; then
+            echo "TARGET_YEAR=${{ github.event.inputs.manual_year }}" >> $GITHUB_ENV
+          else
+            # 自动触发时，利用系统时间将年份减 1 (生成去年的)
+            LAST_YEAR=$(expr $(date +"%Y") - 1)
+            echo "TARGET_YEAR=$LAST_YEAR" >> $GITHUB_ENV
+          fi
+          echo "将生成 ${{ env.TARGET_YEAR }} 年的热力图存档"
+
+      - name: Generate Annual Heatmap
+        run: |
+          python update_daily_summary_heatmap.py
+        env:
+          YEAR: ${{ env.TARGET_YEAR }}
+
+      - name: Save to old_heatmap folder
+        run: |
+          # 创建文件夹
+          mkdir -p old_heatmap
+          # 检查 main.svg 是否存在
+          if [ -f "daily_summary_heatmap/main.svg" ]; then
+            # 复制到 old_heatmap，重命名为 年份.svg
+            cp daily_summary_heatmap/main.svg old_heatmap/${{ env.TARGET_YEAR }}.svg
+            echo "已保存 ${{ env.TARGET_YEAR }} 年热力图到 old_heatmap/${{ env.TARGET_YEAR }}.svg"
+          else
+            echo "警告：未找到生成的热力图文件"
+            exit 1
+          fi
+
+      - name: Commit and Push
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "GitHub Actions"
+          git add old_heatmap/
+          git diff --staged --quiet || git commit -m "Archive heatmap for ${{ env.TARGET_YEAR }}"
+          git push || echo "nothing to push"
