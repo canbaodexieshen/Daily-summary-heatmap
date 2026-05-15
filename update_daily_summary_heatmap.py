@@ -353,12 +353,12 @@ def process_svg_styling(file_path, data_dict, current_year):
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # 1. Update statistics text
-    total_count = len(data_dict)
+    # 1. Update statistics text - 只统计当前年份的记录数
+    year_count = sum(1 for date_str in data_dict.keys() if date_str.startswith(str(current_year)))
     # 匹配 "2026: 0 次" 或 "2026: 0 分钟" 格式
     content = re.sub(
         rf"({current_year}:\s*)[0-9\.]+(\s*(?:分钟|次))",
-        rf"\g<1>{total_count} 次",
+        rf"\g<1>{year_count} 次",
         content,
     )
 
