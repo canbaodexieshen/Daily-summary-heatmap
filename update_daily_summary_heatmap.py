@@ -77,12 +77,32 @@ def get_notion_data(token, database_id):
                 res = json.loads(response.read())
                 for result in res.get("results", []):
                     total_fetched += 1
+                    # 防御性检查：确保 result 是字典且有 properties
+                    if not isinstance(result, dict):
+                        print(f"[WARN] Skipping invalid result at index {total_fetched}: not a dict")
+                        continue
+                    
                     props = result.get("properties", {})
+                    
+                    # 如果 properties 为 None 或不是字典，设置空字典
+                    if props is None or not isinstance(props, dict):
+                        props = {}
+                    
+                    # 调试：打印第一个页面的属性结构（仅第一次）
+                    if total_fetched == 1:
+                        print(f"[DEBUG] First page properties structure:")
+                        for prop_name, prop_value in list(props.items())[:5]:  # 只显示前5个
+                            if isinstance(prop_value, dict):
+                                print(f"  - {prop_name}: type={prop_value.get('type')}")
+                            else:
+                                print(f"  - {prop_name}: {type(prop_value).__name__}")
 
-                    # 读取"日期"属性（兼容 date / created_time 等类型）
+                    # 读取"日期"属性（兼容 date / created_time / title 等类型）
                     date_val = None
                     date_prop = props.get("日期")
-                    if date_prop:
+                    
+                    # 防御性检查：确保 date_prop 是字典类型
+                    if date_prop and isinstance(date_prop, dict):
                         ptype = date_prop.get("type")
                         if ptype == "date":
                             date_val = date_prop.get("date", {}).get("start")
@@ -90,6 +110,15 @@ def get_notion_data(token, database_id):
                             ct = date_prop.get("created_time")
                             if ct:
                                 date_val = ct.split("T")[0]
+                        elif ptype == "title":
+                            # title 类型是一个数组，取第一个元素的 plain_text
+                            title_arr = date_prop.get("title", [])
+                            if title_arr and isinstance(title_arr, list) and len(title_arr) > 0:
+                                title_text = title_arr[0].get("plain_text", "")
+                                # 尝试从标题中提取日期（如 "2024-01-15 每日总结"）
+                                date_match = re.search(r"(\d{4}-\d{2}-\d{2})", title_text)
+                                if date_match:
+                                    date_val = date_match.group(1)
 
                     # 读取"创建时间"属性
                     # 优先使用页面自带的 created_time
@@ -97,7 +126,8 @@ def get_notion_data(token, database_id):
 
                     # 如果有自定义的"创建时间"属性，优先使用它
                     ct_prop = props.get("创建时间")
-                    if ct_prop:
+                    # 防御性检查：确保 ct_prop 是字典类型
+                    if ct_prop and isinstance(ct_prop, dict):
                         ptype = ct_prop.get("type")
                         if ptype == "created_time":
                             created_time = ct_prop.get("created_time")
