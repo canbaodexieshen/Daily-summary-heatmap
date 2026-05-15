@@ -9,18 +9,16 @@ import json
 
 
 def validate_database_id(database_id):
-    """验证数据库 ID 格式"""
-    # 移除可能的连字符
+    """Validate database ID format"""
     clean_id = database_id.replace("-", "")
-    # Notion 数据库 ID 通常是 32 个字符（带连字符时 36 个）
     if len(clean_id) != 32:
-        return False, f"数据库 ID 长度不正确: {len(clean_id)} 字符（应为 32 字符）"
+        return False, f"Database ID length is incorrect: {len(clean_id)} characters (should be 32)"
     return True, ""
 
 
 def verify_notion_connection(token, db_id):
-    """验证 Notion 连接是否正常"""
-    print("正在验证 Notion 连接...")
+    """Verify Notion connection"""
+    print("Verifying Notion connection...")
     url = f"https://api.notion.com/v1/databases/{db_id}"
     auth_headers = {
         "Authorization": f"Bearer {token}",
@@ -32,26 +30,26 @@ def verify_notion_connection(token, db_id):
         with urllib.request.urlopen(req) as response:
             res = json.loads(response.read())
             if "title" in res:
-                title = res["title"][0]["plain_text"] if res["title"] else "无标题"
-                print(f"[OK] Database connected successfully: {title}")
+                title = res["title"][0]["plain_text"] if res["title"] else "No title"
+                print(f"[OK] Database connected: {title}")
                 return True, res
             else:
-                return False, "数据库响应格式异常"
+                return False, "Invalid database response format"
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8") if e.fp else ""
         if e.code == 401:
-            return False, "认证失败，请检查 NOTION_TOKEN 是否正确"
+            return False, "Authentication failed - please check NOTION_TOKEN"
         elif e.code == 404:
-            return False, "数据库未找到，请检查 NOTION_DATABASE_ID 是否正确，以及 Integration 是否已连接到该数据库"
+            return False, "Database not found - please check NOTION_DATABASE_ID and ensure Integration is connected"
         else:
-            return False, f"HTTP 错误 {e.code}: {error_body[:200]}"
+            return False, f"HTTP error {e.code}: {error_body[:200]}"
     except Exception as e:
-        return False, f"连接验证失败: {str(e)}"
+        return False, f"Connection failed: {str(e)}"
 
 
 def get_notion_data(token, database_id):
     """从 Notion 每日总结数据库拉取所有页面，提取日期和创建时间"""
-    print("正在连接 Notion 数据库并抓取每日总结数据...")
+    print("Fetching daily summary data from Notion...")
     url = f"https://api.notion.com/v1/databases/{database_id}/query"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -81,26 +79,29 @@ def get_notion_data(token, database_id):
                     total_fetched += 1
                     props = result.get("properties", {})
 
-                    # 读取"日期"属性
+                    # 读取"日期"属性（兼容 date / created_time 等类型）
                     date_val = None
                     date_prop = props.get("日期")
                     if date_prop:
-                        if date_prop.get("type") == "date":
+                        ptype = date_prop.get("type")
+                        if ptype == "date":
                             date_val = date_prop.get("date", {}).get("start")
-                        elif date_prop.get("type") == "created_time":
-                            # 如果日期属性实际上就是 created_time 类型
-                            date_val = date_prop.get("created_time", "").split("T")[0] if date_prop.get("created_time") else None
+                        elif ptype == "created_time":
+                            ct = date_prop.get("created_time")
+                            if ct:
+                                date_val = ct.split("T")[0]
 
                     # 读取"创建时间"属性
-                    # 优先使用 result 自带的 created_time
+                    # 优先使用页面自带的 created_time
                     created_time = result.get("created_time")
 
                     # 如果有自定义的"创建时间"属性，优先使用它
-                    if props.get("创建时间"):
-                        ct_prop = props["创建时间"]
-                        if ct_prop.get("type") == "created_time":
+                    ct_prop = props.get("创建时间")
+                    if ct_prop:
+                        ptype = ct_prop.get("type")
+                        if ptype == "created_time":
                             created_time = ct_prop.get("created_time")
-                        elif ct_prop.get("type") == "date":
+                        elif ptype == "date":
                             created_time = ct_prop.get("date", {}).get("start")
 
                     if date_val:
@@ -137,22 +138,20 @@ def get_notion_data(token, database_id):
             print(f"[ERROR] Failed to get Notion data: {e}")
             sys.exit(1)
 
-    print(f"共读取到 {len(data_dict)} 天的每日总结记录（总计 {total_fetched} 条页面）")
+    print(f"Fetched {len(data_dict)} days of daily summary records (total {total_fetched} pages)")
     return data_dict
 
 
 def calculate_intensity(created_time_str):
     """
-    根据创建时间计算颜色强度（0.0 ~ 1.0）
-    规则：越靠近午夜 23:59:59，颜色越深
+    Calculate color intensity based on creation time (0.0 ~ 1.0)
+    Rule: closer to midnight (23:59:59) = darker color
     """
     if not created_time_str:
         return 0.0
 
     try:
-        # 解析创建时间
         dt = datetime.datetime.fromisoformat(created_time_str.replace("Z", "+00:00"))
-        # 转换为当天本地时间（假设用户使用北京时间 UTC+8）
         if dt.tzinfo is not None:
             dt = dt.astimezone(datetime.timezone(datetime.timedelta(hours=8)))
         else:
@@ -162,16 +161,13 @@ def calculate_intensity(created_time_str):
         minute = dt.minute
         second = dt.second
 
-        # 计算当天总秒数（从 00:00:00 开始）
         total_seconds = hour * 3600 + minute * 60 + second
-
-        # 午夜 23:59:59 = 86399 秒
         max_seconds = 23 * 3600 + 59 * 60 + 59
 
         intensity = total_seconds / max_seconds
         return min(1.0, max(0.0, intensity))
     except Exception as e:
-        print(f"解析时间出错: {created_time_str}, {e}")
+        print(f"[WARN] Failed to parse time: {created_time_str}, {e}")
         return 0.0
 
 
@@ -202,19 +198,19 @@ def get_color_for_intensity(intensity):
 
 
 def process_svg_styling(file_path, data_dict, current_year):
-    """对底稿 SVG 执行渐变着色，并修正年度统计文字"""
+    """Apply gradient colors to SVG and update statistics"""
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # 1. 修正统计文字
+    # 1. Update statistics text
     total_count = len(data_dict)
     content = re.sub(
         rf"({current_year}:\s*)[0-9\.]+(\s*分钟)",
-        rf"\g<1>{total_count} 天",
+        rf"\g<1>{total_count} days",
         content,
     )
 
-    # 2. 对每个日期格子应用渐变颜色，并更新 title
+    # 2. Apply gradient colors and update title for each date cell
     def rect_replacer(match):
         rect_tag = match.group(0)
         date_match = re.search(r"<title>(\d{4}-\d{2}-\d{2})</title>", rect_tag)
@@ -226,7 +222,7 @@ def process_svg_styling(file_path, data_dict, current_year):
         intensity = calculate_intensity(created_time)
         color = get_color_for_intensity(intensity)
 
-        # 更新 <title> 标签
+        # Update <title> tag
         if created_time:
             try:
                 dt = datetime.datetime.fromisoformat(created_time.replace("Z", "+00:00"))
@@ -236,10 +232,10 @@ def process_svg_styling(file_path, data_dict, current_year):
                     dt = dt + datetime.timedelta(hours=8)
                 time_str = dt.strftime("%H:%M")
             except:
-                time_str = "未知"
+                time_str = "unknown"
             title_text = f"{date_str} - {time_str}"
         else:
-            title_text = f"{date_str} - 无记录"
+            title_text = f"{date_str} - no record"
 
         rect_tag = re.sub(
             r"<title>\d{4}-\d{2}-\d{2}</title>",
@@ -257,18 +253,18 @@ def process_svg_styling(file_path, data_dict, current_year):
         flags=re.DOTALL,
     )
 
-    # 3. 补充白色背景
+    # 3. Add white background
     if 'id="background"' not in content:
         content = content.replace("<svg ", '<svg style="background-color:white;" ', 1)
 
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(content)
 
-    print(f"着色完成：共 {total_count} 天有每日总结")
+    print(f"Styling complete: {total_count} days with daily summary")
 
 
 def generate_heatmap(notion_token, database_id, year):
-    """调用 github_heatmap CLI 生成底稿 SVG"""
+    """Generate base SVG using github_heatmap CLI"""
     command = [
         "github_heatmap",
         "notion",
@@ -278,7 +274,7 @@ def generate_heatmap(notion_token, database_id, year):
         "--value_prop_name", "总时长",
         "--unit", "次",
         "--year", str(year),
-        "--me", "每日总结热力图",
+        "--me", "Daily Summary Heatmap",
         "--without-type-name",
         "--background-color", "#FFFFFF",
         "--track-color", "#ebedf0",
@@ -286,12 +282,12 @@ def generate_heatmap(notion_token, database_id, year):
         "--text-color", "#000000",
     ]
 
-    print(f"正在调用热力图引擎生成 {year} 年底稿...")
+    print(f"Generating {year} heatmap template...")
     result = subprocess.run(command, check=True, capture_output=True, text=True)
     if result.stdout:
         print(result.stdout)
     if result.stderr:
-        print(f"警告: {result.stderr}")
+        print(f"Warning: {result.stderr}")
 
     return "OUT_FOLDER/notion.svg"
 
@@ -330,21 +326,21 @@ def main():
     year_str = os.getenv("YEAR", "")
     target_year = int(year_str) if year_str and year_str.strip() else current_year
 
-    # 1. 拉取 Notion 数据
+    # 1. Fetch Notion data
     real_data = get_notion_data(notion_token, database_id)
 
-    # 2. 生成底稿 SVG
+    # 2. Generate base SVG
     svg_path = generate_heatmap(notion_token, database_id, target_year)
 
     if not os.path.exists(svg_path):
         print(f"[ERROR] SVG template not generated: {svg_path}")
         sys.exit(1)
 
-    # 3. 渐变着色 + 统计注入
-    print("正在执行渐变着色...")
+    # 3. Apply styling
+    print("Applying gradient colors...")
     process_svg_styling(svg_path, real_data, target_year)
 
-    # 4. 移动到 daily_summary_heatmap/main.svg
+    # 4. Move to output directory
     os.makedirs("daily_summary_heatmap", exist_ok=True)
     dest = "daily_summary_heatmap/main.svg"
     os.replace(svg_path, dest)
