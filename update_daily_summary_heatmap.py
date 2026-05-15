@@ -47,6 +47,112 @@ def verify_notion_connection(token, db_id):
         return False, f"Connection failed: {str(e)}"
 
 
+def safe_get_nested(data, *keys, default=None):
+    """Safely get nested dictionary values. Returns default if any key is missing or value is None."""
+    result = data
+    for key in keys:
+        if result is None:
+            return default
+        if not isinstance(result, dict):
+            return default
+        result = result.get(key)
+    return result if result is not None else default
+
+
+def parse_date_from_text(text):
+    """
+    从文本中提取日期，支持多种格式：
+    - 2024-01-15
+    - 2026年5月10日
+    - 5月10日（自动补当年）
+    - 2026/01/15
+    """
+    if not text:
+        return None
+    
+    # 格式1: 2024-01-15
+    match = re.search(r"(\d{4}-\d{2}-\d{2})", text)
+    if match:
+        return match.group(1)
+    
+    # 格式2: 2026/01/15
+    match = re.search(r"(\d{4}/\d{2}/\d{2})", text)
+    if match:
+        return match.group(1).replace("/", "-")
+    
+    # 格式3: 2026年5月10日
+    match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", text)
+    if match:
+        y, m, d = match.groups()
+        return f"{y}-{int(m):02d}-{int(d):02d}"
+    
+    # 格式4: 5月10日（当年）
+    match = re.search(r"(\d{1,2})月(\d{1,2})日", text)
+    if match:
+        m, d = match.groups()
+        current_y = datetime.datetime.now().year
+        return f"{current_y}-{int(m):02d}-{int(d):02d}"
+    
+    return None
+
+
+def extract_date_from_property(prop):
+    """
+    从 Notion 属性中提取日期值
+    prop: Notion API 返回的属性对象
+    returns: (date_str, created_time_str) 或 (None, None)
+    """
+    if prop is None:
+        return None, None
+    
+    # 确保是字典
+    if not isinstance(prop, dict):
+        return None, None
+    
+    prop_type = prop.get("type")
+    if not prop_type:
+        return None, None
+    
+    date_val = None
+    
+    if prop_type == "date":
+        date_obj = prop.get("date")
+        if date_obj and isinstance(date_obj, dict):
+            date_val = date_obj.get("start")
+    
+    elif prop_type == "created_time":
+        date_val = prop.get("created_time")
+    
+    elif prop_type == "title":
+        title_arr = prop.get("title")
+        if title_arr and isinstance(title_arr, list) and len(title_arr) > 0:
+            first_item = title_arr[0]
+            if isinstance(first_item, dict):
+                title_text = first_item.get("plain_text", "")
+                date_val = parse_date_from_text(title_text)
+    
+    elif prop_type == "formula":
+        formula_obj = prop.get("formula")
+        if formula_obj and isinstance(formula_obj, dict):
+            # formula 可能返回 string 或 date
+            date_val = formula_obj.get("string") or safe_get_nested(formula_obj, "date", "start")
+    
+    elif prop_type == "rich_text":
+        rt_arr = prop.get("rich_text")
+        if rt_arr and isinstance(rt_arr, list) and len(rt_arr) > 0:
+            first_item = rt_arr[0]
+            if isinstance(first_item, dict):
+                rt_text = first_item.get("plain_text", "")
+                date_val = parse_date_from_text(rt_text)
+    
+    # 标准化日期格式
+    if date_val:
+        date_str = str(date_val).split("T")[0]
+        return date_str, date_val
+    
+    return None, None
+
+
 def get_notion_data(token, database_id):
     """从 Notion 每日总结数据库拉取所有页面，提取日期和创建时间"""
     print("Fetching daily summary data from Notion...")
@@ -61,11 +167,13 @@ def get_notion_data(token, database_id):
     has_more = True
     next_cursor = None
     total_fetched = 0
+    skipped_count = 0
 
     while has_more:
         body = {}
         if next_cursor:
             body["start_cursor"] = next_cursor
+        
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
@@ -75,70 +183,81 @@ def get_notion_data(token, database_id):
         try:
             with urllib.request.urlopen(req) as response:
                 res = json.loads(response.read())
-                for result in res.get("results", []):
+                results = res.get("results", [])
+                
+                if total_fetched == 0:
+                    print(f"[INFO] Total pages in database: {len(results)}")
+                
+                for idx, result in enumerate(results):
                     total_fetched += 1
-                    # 防御性检查：确保 result 是字典且有 properties
+                    
+                    # 防御性检查：确保 result 是字典
                     if not isinstance(result, dict):
-                        print(f"[WARN] Skipping invalid result at index {total_fetched}: not a dict")
+                        skipped_count += 1
                         continue
                     
-                    props = result.get("properties", {})
-                    
-                    # 如果 properties 为 None 或不是字典，设置空字典
+                    # 获取 properties
+                    props = result.get("properties")
                     if props is None or not isinstance(props, dict):
-                        props = {}
+                        skipped_count += 1
+                        continue
                     
-                    # 调试：打印第一个页面的属性结构（仅第一次）
+                    # 调试：打印第一个页面的属性结构
                     if total_fetched == 1:
-                        print(f"[DEBUG] First page properties structure:")
-                        for prop_name, prop_value in list(props.items())[:5]:  # 只显示前5个
-                            if isinstance(prop_value, dict):
-                                print(f"  - {prop_name}: type={prop_value.get('type')}")
-                            else:
-                                print(f"  - {prop_name}: {type(prop_value).__name__}")
-
-                    # 读取"日期"属性（兼容 date / created_time / title 等类型）
-                    date_val = None
-                    date_prop = props.get("日期")
+                        print(f"[DEBUG] First page has {len(props)} properties:")
+                        all_prop_names = list(props.keys())
+                        print(f"  All property names: {all_prop_names}")
+                        
+                        # 查找"日期"属性
+                        date_prop_name = None
+                        for name in all_prop_names:
+                            if "日期" in name or "日期" in name:
+                                date_prop_name = name
+                                break
+                        
+                        if date_prop_name:
+                            print(f"  [FOUND] Date property: '{date_prop_name}'")
+                            date_prop = props.get(date_prop_name)
+                            print(f"  [DEBUG] Date property value: {json.dumps(date_prop, ensure_ascii=False)[:300]}")
                     
-                    # 防御性检查：确保 date_prop 是字典类型
-                    if date_prop and isinstance(date_prop, dict):
-                        ptype = date_prop.get("type")
-                        if ptype == "date":
-                            date_val = date_prop.get("date", {}).get("start")
-                        elif ptype == "created_time":
-                            ct = date_prop.get("created_time")
-                            if ct:
-                                date_val = ct.split("T")[0]
-                        elif ptype == "title":
-                            # title 类型是一个数组，取第一个元素的 plain_text
-                            title_arr = date_prop.get("title", [])
-                            if title_arr and isinstance(title_arr, list) and len(title_arr) > 0:
-                                title_text = title_arr[0].get("plain_text", "")
-                                # 尝试从标题中提取日期（如 "2024-01-15 每日总结"）
-                                date_match = re.search(r"(\d{4}-\d{2}-\d{2})", title_text)
-                                if date_match:
-                                    date_val = date_match.group(1)
-
-                    # 读取"创建时间"属性
-                    # 优先使用页面自带的 created_time
+                    # 查找日期属性（尝试不同的名称）
+                    date_prop = None
+                    date_prop_name = None
+                    
+                    # 首先尝试精确匹配
+                    if "日期" in props:
+                        date_prop_name = "日期"
+                        date_prop = props.get("日期")
+                    else:
+                        # 尝试模糊匹配
+                        for name in props.keys():
+                            if "日期" in name or name == "Name" or name == "名称":
+                                date_prop_name = name
+                                date_prop = props.get(name)
+                                break
+                    
+                    # 提取日期
+                    date_str = None
+                    if date_prop:
+                        date_str, _ = extract_date_from_property(date_prop)
+                    
+                    # 如果仍未找到日期，尝试从页面标题提取
+                    if not date_str:
+                        title_prop = props.get("Name") or props.get("名称") or props.get("title")
+                        if title_prop:
+                            date_str, _ = extract_date_from_property(title_prop)
+                    
+                    # 获取创建时间（优先使用页面的 created_time）
                     created_time = result.get("created_time")
-
-                    # 如果有自定义的"创建时间"属性，优先使用它
-                    ct_prop = props.get("创建时间")
-                    # 防御性检查：确保 ct_prop 是字典类型
-                    if ct_prop and isinstance(ct_prop, dict):
-                        ptype = ct_prop.get("type")
-                        if ptype == "created_time":
-                            created_time = ct_prop.get("created_time")
-                        elif ptype == "date":
-                            created_time = ct_prop.get("date", {}).get("start")
-
-                    if date_val:
-                        date_str = str(date_val).split("T")[0]
+                    
+                    if date_str:
                         # 保留当天最早的创建时间
-                        if date_str not in data_dict or (created_time and created_time < data_dict[date_str]):
+                        if date_str not in data_dict or (created_time and data_dict.get(date_str) is None):
                             data_dict[date_str] = created_time
+                        elif created_time and created_time < data_dict.get(date_str, created_time):
+                            data_dict[date_str] = created_time
+                    else:
+                        skipped_count += 1
 
                 has_more = res.get("has_more", False)
                 next_cursor = res.get("next_cursor")
@@ -166,9 +285,11 @@ def get_notion_data(token, database_id):
                 sys.exit(1)
         except Exception as e:
             print(f"[ERROR] Failed to get Notion data: {e}")
+            import traceback
+            traceback.print_exc()
             sys.exit(1)
 
-    print(f"Fetched {len(data_dict)} days of daily summary records (total {total_fetched} pages)")
+    print(f"Fetched {len(data_dict)} days of daily summary records (total {total_fetched} pages, skipped {skipped_count} invalid)")
     return data_dict
 
 
@@ -323,6 +444,7 @@ def generate_heatmap(notion_token, database_id, year):
 
 
 def main():
+    # 从环境变量读取凭证
     notion_token = os.getenv("NOTION_TOKEN")
     database_id = os.getenv("NOTION_DATABASE_ID")
 
