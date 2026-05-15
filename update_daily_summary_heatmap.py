@@ -355,9 +355,10 @@ def process_svg_styling(file_path, data_dict, current_year):
 
     # 1. Update statistics text
     total_count = len(data_dict)
+    # 匹配 "2026: 0 次" 或 "2026: 0 分钟" 格式
     content = re.sub(
-        rf"({current_year}:\s*)[0-9\.]+(\s*分钟)",
-        rf"\g<1>{total_count} days",
+        rf"({current_year}:\s*)[0-9\.]+(\s*(?:分钟|次))",
+        rf"\g<1>{total_count} 次",
         content,
     )
 
@@ -497,6 +498,12 @@ def main():
     dest = "daily_summary_heatmap/main.svg"
     os.replace(svg_path, dest)
     print(f"[OK] Heatmap saved to {dest}")
+    
+    # 5. 同时保存到根目录，方便 GitHub Pages 直接访问
+    root_dest = "main.svg"
+    import shutil
+    shutil.copy2(dest, root_dest)
+    print(f"[OK] Also copied to {root_dest} for GitHub Pages")
 
 
 if __name__ == "__main__":
