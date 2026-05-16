@@ -177,13 +177,13 @@
 
         // 自动填入当前年份并动态生成年份选项
         const currentYear = new Date().getFullYear();
-        yearSelect.options[0].text = `${currentYear} (今年)`;
+        yearSelect.options[0].text = `${currentYear}`;
         
         // 动态添加过往年份选项（从2024到当前年-1）
         for (let y = currentYear - 1; y >= 2024; y--) {
             const option = document.createElement('option');
             option.value = y;
-            option.textContent = `${y}年存档`;
+            option.textContent = `${y}`;
             yearSelect.appendChild(option);
         }
 
