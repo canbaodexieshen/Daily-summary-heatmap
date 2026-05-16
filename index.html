@@ -187,77 +187,35 @@
             yearSelect.appendChild(option);
         }
 
-        // 智能解析 baseUrl - 支持 GitHub Pages 子目录部署
-        let baseUrl = '';
-        
-        // 方法1: 从脚本标签的 src 属性推断
-        const scripts = document.getElementsByTagName('script');
-        if (scripts.length > 0) {
-            const lastScript = scripts[scripts.length - 1];
-            const src = lastScript.src || '';
-            if (src) {
-                const pathParts = src.split('/');
-                // 去掉文件名 (index.html 或内联脚本后的随机名)
-                pathParts.pop();
-                if (pathParts.length > 0) {
-                    baseUrl = pathParts.join('/') + '/';
-                }
-            }
-        }
-        
-        // 方法2: 如果脚本解析失败，使用 window.location
-        if (!baseUrl || baseUrl === '/') {
-            const path = window.location.pathname;
-            // 去掉文件名
-            let cleanPath = path.endsWith('/') ? path : path.substring(0, path.lastIndexOf('/') + 1);
-            // 去掉 index.html
-            cleanPath = cleanPath.replace(/\/index\.html$/, '/');
-            baseUrl = cleanPath || '/';
-        }
-        
-        console.log('[Heatmap Debug] baseUrl:', baseUrl);
-        console.log('[Heatmap Debug] pathname:', window.location.pathname);
-
-        // 加载函数（附时间戳防缓存）
-        function loadHeatmap(url, year) {
+        // 加载函数 - 使用相对路径，无需计算 baseUrl
+        // GitHub Pages 部署时 index.html 在根目录，相对路径始终正确
+        function loadHeatmap(url) {
             content.innerHTML = '<p class="loading-text">正在加载每日总结…</p>';
-            const fetchUrl = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
-            console.log('[Heatmap Debug] Loading:', fetchUrl);
-
-            fetch(fetchUrl)
+            fetch(url)
                 .then(res => {
-                    if (!res.ok) {
-                        console.error('[Heatmap Debug] Load failed:', res.status, url);
-                        throw new Error(`文件不存在 (${res.status})`);
-                    }
+                    if (!res.ok) throw new Error(`该年份尚无存档文件 (${res.status})`);
                     return res.text();
                 })
-                .then(svg => { 
-                    content.innerHTML = svg; 
-                    console.log('[Heatmap Debug] Loaded successfully');
+                .then(svg => {
+                    content.innerHTML = svg;
                 })
                 .catch(err => {
-                    console.error('[Heatmap Debug] Error:', err.message);
                     content.innerHTML =
-                        `<p style="color:#888;text-align:center;font-size:12px;">${err.message}<br><small>路径: ${url}</small></p>`;
+                        `<p style="color:#888;text-align:center;font-size:12px;">${err.message}</p>`;
                 });
         }
 
-        // 初始加载：如果有 URL 参数用参数，否则默认加载 main.svg
-        const defaultUrl = `${baseUrl}main.svg`;
-        loadHeatmap(defaultUrl, currentYear);
+        // 初始加载当前年热力图（相对路径）
+        loadHeatmap('daily_summary_heatmap/main.svg');
 
         // 年份切换
         yearSelect.addEventListener('change', e => {
             if (e.target.value === 'current') {
-                // 当前年使用 main.svg
-                loadHeatmap(`${baseUrl}main.svg`, currentYear);
+                // 当前年：daily_summary_heatmap/main.svg
+                loadHeatmap('daily_summary_heatmap/main.svg');
             } else {
-                // 历史年份使用 old_heatmap
-                const year = e.target.value;
-                const archivePath = `${baseUrl}old_heatmap/${year}.svg`;
-                console.log('[Heatmap Debug] Switching to year:', year, 'Path:', archivePath);
-                loadHeatmap(archivePath, year);
+                // 历史年份：old_heatmap/{年份}.svg
+                loadHeatmap(`old_heatmap/${e.target.value}.svg`);
             }
         });
 
