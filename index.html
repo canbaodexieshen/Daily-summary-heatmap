@@ -219,26 +219,35 @@
             }
         });
 
-        // ==================== 深色模式逻辑 ====================
+        // ================= 智能主题切换逻辑 =================
+
         function applyTheme(isDark) {
-            document.body.classList.toggle('dark-mode', isDark);
-            themeToggle.textContent = isDark ? '☀️' : '🌙';
-            try { localStorage.setItem('dailySummaryHeatmapTheme', isDark ? 'dark' : 'light'); } catch(e) {}
+            if (isDark) {
+                document.body.classList.add('dark-mode');
+                themeToggle.innerText = '☀️';
+            } else {
+                document.body.classList.remove('dark-mode');
+                themeToggle.innerText = '🌙';
+            }
         }
 
-        // 优先使用用户上次手动选择的主题
-        const savedTheme = (() => { try { return localStorage.getItem('dailySummaryHeatmapTheme'); } catch(e) { return null; } })();
-        const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+        // 1. 自动感应系统设置
+        const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)');
+        // 兼容 Notion 嵌入：Notion 经常通过 URL 参数传递 theme=dark 
+        const params = new URLSearchParams(window.location.search);
+        const isNotionDark = params.get('theme') === 'dark';
 
-        applyTheme(savedTheme ? savedTheme === 'dark' : systemDark.matches);
+        applyTheme(systemPrefersDark.matches || isNotionDark); // 初始化
 
-        // 跟随系统变化
-        systemDark.addEventListener('change', e => {
-            if (!localStorage.getItem('dailySummaryHeatmapTheme')) applyTheme(e.matches);
+        // 2. 监听系统设置变化
+        systemPrefersDark.addEventListener('change', e => {
+            applyTheme(e.matches);
         });
 
+        // 3. 手动切换覆盖
         themeToggle.addEventListener('click', () => {
-            applyTheme(!document.body.classList.contains('dark-mode'));
+            const isCurrentlyDark = document.body.classList.contains('dark-mode');
+            applyTheme(!isCurrentlyDark);
         });
     </script>
 </body>
