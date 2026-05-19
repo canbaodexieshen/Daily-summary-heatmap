@@ -95,14 +95,3 @@ https://your-username.github.io/repository-name/
 1. 进入仓库的 **Actions** 页面
 2. 选择 **Update Daily Summary Heatmap** 工作流
 3. 点击 **Run workflow** 按钮
-
-## 技术栈
-
-- **数据源**: Notion API
-- **热力图生成**: github-heatmap
-- **前端**: 原生 HTML/CSS/JavaScript
-- **自动化**: GitHub Actions
-
-## License
-
-MIT
