@@ -145,6 +145,28 @@
         body.dark-mode .legend {
             color: #888;
         }
+
+        /* iPad mouse/trackpad fallback for the SVG's native title tooltip. */
+        .ipad-heatmap-tooltip {
+            position: fixed;
+            z-index: 200;
+            pointer-events: none;
+            max-width: calc(100vw - 16px);
+            padding: 5px 9px;
+            border: 1px solid #d4d4d4;
+            border-radius: 6px;
+            background: #fff;
+            color: #222;
+            font-size: 12px;
+            line-height: 1.4;
+            overflow-wrap: anywhere;
+        }
+
+        body.dark-mode .ipad-heatmap-tooltip {
+            background: #2c2c2c;
+            border-color: #555;
+            color: #eee;
+        }
     </style>
 </head>
 <body>
@@ -175,6 +197,66 @@
         const yearSelect  = document.getElementById('year-select');
         const themeToggle = document.getElementById('theme-toggle');
 
+        // iPadOS can report a desktop Mac user agent; do not rely on hover media
+        // queries, since touch remains the primary input even with a mouse.
+        const hideIPadTooltip = (() => {
+            const isIPad = /iPad/.test(navigator.userAgent) ||
+                (/Mac/.test(navigator.platform) && navigator.maxTouchPoints > 1);
+            if (!isIPad) return () => {};
+
+            let tooltip = null;
+            let activeCell = null;
+            const hide = () => {
+                activeCell = null;
+                if (tooltip) tooltip.hidden = true;
+            };
+            const show = event => {
+                if (event.pointerType !== 'mouse' || event.buttons !== 0) {
+                    hide();
+                    return;
+                }
+                const cell = event.target.closest('rect');
+                if (!cell || !content.contains(cell)) { hide(); return; }
+                if (cell === activeCell) return;
+                const title = cell.querySelector('title');
+                if (!title || !title.textContent.trim()) { hide(); return; }
+                if (!tooltip) {
+                    tooltip = document.createElement('div');
+                    tooltip.className = 'ipad-heatmap-tooltip';
+                    tooltip.setAttribute('role', 'tooltip');
+                    document.body.appendChild(tooltip);
+                }
+                activeCell = cell;
+                tooltip.textContent = title.textContent.trim();
+                tooltip.hidden = false;
+                tooltip.style.left = '0px';
+                tooltip.style.top = '0px';
+                const bounds = cell.getBoundingClientRect();
+                const width = tooltip.offsetWidth;
+                const height = tooltip.offsetHeight;
+                const viewport = document.documentElement;
+                const left = Math.max(8, Math.min(bounds.left + bounds.width / 2 - width / 2,
+                    viewport.clientWidth - width - 8));
+                const above = bounds.top - height - 8;
+                const top = Math.max(8, Math.min(above >= 8 ? above : bounds.bottom + 8,
+                    viewport.clientHeight - height - 8));
+                tooltip.style.left = `${left}px`;
+                tooltip.style.top = `${top}px`;
+            };
+            // Delegate to the container: no per-cell listeners, polling or images.
+            content.addEventListener('pointerover', show, { passive: true });
+            content.addEventListener('pointermove', show, { passive: true });
+            content.addEventListener('pointerout', event => {
+                if (!activeCell || !event.relatedTarget || !activeCell.contains(event.relatedTarget)) hide();
+            }, { passive: true });
+            document.addEventListener('pointerdown', hide, { passive: true });
+            document.addEventListener('scroll', hide, { capture: true, passive: true });
+            document.addEventListener('visibilitychange', hide);
+            window.addEventListener('blur', hide);
+            window.addEventListener('resize', hide);
+            return hide;
+        })();
+
         // 自动填入当前年份并动态生成年份选项
         const currentYear = new Date().getFullYear();
         yearSelect.options[0].text = `${currentYear}`;
@@ -190,6 +272,7 @@
         // 加载函数 - 使用相对路径，无需计算 baseUrl
         // GitHub Pages 部署时 index.html 在根目录，相对路径始终正确
         function loadHeatmap(url) {
+            hideIPadTooltip();
             content.innerHTML = '<p class="loading-text">正在加载每日总结…</p>';
             fetch(url)
                 .then(res => {
